@@ -88,7 +88,11 @@ function parseBcaDebit_(text) {
   const merchant = f('Merchant'), w = f('Waktu').match(/(\d{2})-(\d{2})-(\d{4})\s+(\d{2}:\d{2}:\d{2})/);
   const amount = Number(f('Nilai Transaksi').replace(/^[A-Z]{3}\s*/i, '').replace(/,\d{1,2}$/, '').replace(/\D/g, ''));
   if (!merchant || !w || !amount) return null;
-  const rule = MERCHANT_RULES.find(r => r[0].test(merchant));
+  const hour = Number(w[4].slice(0, 2));
+  // Grab > 50rb pasti makan: sebelum jam 11 pagi, 11:00–13:59 siang, selebihnya malam
+  const rule = /^grab/i.test(merchant) && amount > 50000
+    ? [null, 'Food', hour < 11 ? 'Pagi' : hour < 14 ? 'Siang' : 'Malam', 'Grab']
+    : MERCHANT_RULES.find(r => r[0].test(merchant));
   const date = w[3] + '-' + w[2] + '-' + w[1];
   return { date, created_at: date + 'T' + w[4], amount, merchant,
            category: rule ? rule[1] : NEED_CHECK, subcategory: rule ? rule[2] : '', note: rule ? rule[3] : merchant };
