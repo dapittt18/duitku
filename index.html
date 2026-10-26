@@ -267,8 +267,14 @@ main{padding:18px 16px 0}
     <img src="icons/icon-192.png" alt="">
     <h2>Duitku</h2>
     <p id="lk_msg">Masukin token API buat buka data lo.</p>
-    <input id="lk_tok" class="inp" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Token">
-    <button class="save" style="--acc:var(--pri)" onclick="submitToken()">Buka</button>
+    <div id="lk_tokw">
+      <input id="lk_tok" class="inp" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Token">
+      <button class="save" style="--acc:var(--pri)" onclick="submitToken()">Buka</button>
+    </div>
+    <div id="lk_bio" hidden>
+      <button class="save" style="--acc:var(--pri)" onclick="bioUnlock()">👆 Buka pakai sidik jari</button>
+      <button class="lnk" style="color:var(--mut)" onclick="askToken()">Pakai token</button>
+    </div>
   </div>
 </div>
 
@@ -406,20 +412,92 @@ function askToken(msg) {
   $('lk_msg').textContent = msg || 'Masukin token API buat buka data lo.';
   $('lk_msg').classList.toggle('err', !!msg);
   $('lk_tok').value = '';
+  $('lk_tokw').hidden = false; $('lk_bio').hidden = true;
   $('lock').hidden = false;
   setTimeout(() => $('lk_tok').focus(), 300);
 }
+let booted = false, offerBio = false;
 function submitToken() {
   const v = $('lk_tok').value.trim(); if (!v) return toast('Tokennya diisi dulu');
   store(TOKEN_KEY, v);
   $('lock').hidden = true;
+  offerBio = true;
   load();
 }
 $('lk_tok').onkeydown = e => { if (e.key === 'Enter') submitToken(); };
 async function load() {
-  try { D = await call('getData'); if (D.lastDate) lastDate = D.lastDate; render(); }
+  try {
+    D = await call('getData'); if (D.lastDate) lastDate = D.lastDate; render(); booted = true;
+    if (offerBio) { offerBio = false; maybeOfferBio(); }
+  }
   catch (e) { $('view').innerHTML = emptyState('⚠️', 'Gagal ambil data', esc(e.message || e), '<button class="pbtn" onclick="load()">Coba lagi</button>'); }
 }
+
+// ---------- kunci sidik jari (WebAuthn, dicek di HP aja) ----------
+const BIO_KEY = 'duitku_bio', BIO_SKIP = 'duitku_bio_skip', RELOCK_MS = 60 * 1000;
+const lsGet = k => { try { return localStorage.getItem(k) || ''; } catch (e) { return ''; } };
+const lsDel = k => { try { localStorage.removeItem(k); } catch (e) {} };
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+const unb64u = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')), c => c.charCodeAt(0));
+const bioOn = () => !!lsGet(BIO_KEY);
+async function bioAvail() {
+  try { return !!window.PublicKeyCredential && await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable(); }
+  catch (e) { return false; }
+}
+async function bioEnable() {
+  try {
+    const c = await navigator.credentials.create({publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rp: {name: 'Duitku', id: location.hostname},
+      user: {id: crypto.getRandomValues(new Uint8Array(16)), name: 'Duitku', displayName: 'Duitku'},
+      pubKeyCredParams: [{type: 'public-key', alg: -7}, {type: 'public-key', alg: -257}],
+      authenticatorSelection: {authenticatorAttachment: 'platform', userVerification: 'required', residentKey: 'discouraged'},
+      timeout: 60000, attestation: 'none'}});
+    store(BIO_KEY, b64u(c.rawId)); lsDel(BIO_SKIP);
+    closeSheet('ov2'); toast('Kunci sidik jari aktif 🔒');
+    if (tab === 'cat') render();
+  } catch (e) { toast('Gagal aktifin sidik jari'); }
+}
+function bioDisable() {
+  if (!confirm('Matikan kunci sidik jari?')) return;
+  lsDel(BIO_KEY); store(BIO_SKIP, '1'); toast('Kunci sidik jari mati'); render();
+}
+async function maybeOfferBio() {
+  if (bioOn() || lsGet(BIO_SKIP) || !(await bioAvail())) return;
+  $('sheet2').style.setProperty('--acc', 'var(--pri)');
+  $('sheet2').innerHTML = `<div class="grab"></div><h2>Kunci pakai sidik jari?</h2>
+    <p style="color:var(--mut);font-size:13px">Tiap buka Duitku (atau balik setelah 1 menit) bakal minta sidik jari dulu.</p>
+    <button class="save" onclick="bioEnable()">👆 Aktifkan</button>
+    <button class="lnk" style="color:var(--mut)" onclick="store(BIO_SKIP,'1');closeSheet('ov2')">Nanti aja</button>`;
+  openSheet('ov2');
+}
+function bioLock() {
+  $('lk_msg').textContent = 'Duitku kekunci. Buka pakai sidik jari.';
+  $('lk_msg').classList.remove('err');
+  $('lk_tokw').hidden = true; $('lk_bio').hidden = false;
+  $('lock').hidden = false;
+  bioUnlock();
+}
+let bioBusy = false;
+async function bioUnlock() {
+  if (bioBusy) return; bioBusy = true;
+  try {
+    const a = await navigator.credentials.get({publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      allowCredentials: [{type: 'public-key', id: unb64u(lsGet(BIO_KEY)), transports: ['internal', 'hybrid']}],
+      userVerification: 'required', timeout: 60000}});
+    if (!(new Uint8Array(a.response.authenticatorData)[32] & 4)) throw new Error('UV');
+    $('lock').hidden = true;
+    if (!booted) load();
+  } catch (e) {
+    $('lk_msg').textContent = 'Belum kebuka. Tap tombol di bawah buat coba lagi.';
+  } finally { bioBusy = false; }
+}
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (bioOn() && getToken() && $('lock').hidden && hiddenAt && Date.now() - hiddenAt > RELOCK_MS) bioLock();
+});
 
 function shiftM(n) { cur.setMonth(cur.getMonth() + n); render(); }
 function setTab(t) {
@@ -582,7 +660,7 @@ function renderCat(ym) {
       `<button class="ct addt" onclick="newCat('${type}')"><span class="ci">+</span>Tambah</button></div></div>`;
   };
   $('view').innerHTML = block('expense', 'Pengeluaran', 0) + block('income', 'Pemasukan', 60) +
-    '<p style="text-align:center;color:var(--mut);font-size:11px;margin-top:4px">Duitku v10</p>';
+    `<p style="text-align:center;color:var(--mut);font-size:11px;margin-top:4px">Duitku v10 · <button class="tdy" style="color:var(--mut)" onclick="${bioOn() ? 'bioDisable()' : 'bioEnable()'}">🔒 Sidik jari: ${bioOn() ? 'aktif' : 'mati'}</button></p>`;
 }
 
 function openCatSheet(name, type) {
@@ -837,7 +915,7 @@ async function saveCat() {
   toast(parent ? 'Sub kategori ditambah ✓' : 'Kategori ditambah ✓');
 }
 
-if (getToken()) load(); else askToken();
+if (!getToken()) askToken(); else if (bioOn()) bioLock(); else load();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>

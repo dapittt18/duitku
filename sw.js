@@ -1,5 +1,5 @@
 // Duitku service worker: cache app shell + Chart.js + font. Request API (Apps Script) gak pernah di-cache.
-const VERSION = 'duitku-v2';
+const VERSION = 'duitku-v3';
 const SHELL = [
   './', 'index.html', 'config.js', 'manifest.json',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/maskable-192.png', 'icons/maskable-512.png', 'icons/apple-touch-icon.png',
