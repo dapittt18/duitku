@@ -99,36 +99,70 @@ function htmlText_(html) {
     .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/[ \t]+/g, ' ');
 }
 
+// Logika murni (tanpa Gmail/Sheet). items: [{id, refund, t}] urut waktu; existing: [{row, source, amount}] dari sheet.
+// Debit → transaksi baru. Pengembalian dana → hapus debit yang merchant + nominalnya sama;
+// kalau debitnya gak ketemu, dicatat jadi pemasukan biar saldo tetap bener.
+function planBcaSync_(items, existing, refundsDone) {
+  const id = src => String(src).split('|')[0];
+  const seen = {}; existing.forEach(r => { if (r.source) seen[id(r.source)] = true; });
+  const add = [], del = [], refunds = [], log = [];
+  items.forEach(({ id: mid, refund, t }) => {
+    const src = 'gmail:' + mid;
+    if (seen[src] || refundsDone.indexOf(mid) >= 0 || t.created_at < BCA_SINCE) return;
+    const key = src => /\|/.test(src) && src.slice(src.indexOf('|') + 1) === t.merchant;
+    if (!refund) {
+      add.push([Utilities.getUuid(), t.date, 'expense', t.amount, BCA_ACCOUNT, '', t.category, t.note, t.created_at, t.subcategory, src + '|' + t.merchant]);
+      log.push(t.created_at + '  -Rp' + t.amount + '  ' + t.merchant + '  →  ' + t.category + (t.subcategory ? ' › ' + t.subcategory : ''));
+      return;
+    }
+    const i = add.findIndex(r => key(r[10]) && r[3] === t.amount);
+    const ex = existing.find(r => key(String(r.source)) && Number(r.amount) === t.amount && del.indexOf(r.row) < 0);
+    if (i >= 0) { add.splice(i, 1); refunds.push(mid); log.push(t.created_at + '  ↩︎ refund Rp' + t.amount + '  ' + t.merchant + '  →  debitnya gak jadi dicatat'); }
+    else if (ex) { del.push(ex.row); refunds.push(mid); log.push(t.created_at + '  ↩︎ refund Rp' + t.amount + '  ' + t.merchant + '  →  debitnya dihapus'); }
+    else {
+      add.push([Utilities.getUuid(), t.date, 'income', t.amount, BCA_ACCOUNT, '', 'Lainnya', 'Refund ' + t.note, t.created_at, '', src + '|' + t.merchant]);
+      log.push(t.created_at + '  +Rp' + t.amount + '  ' + t.merchant + '  →  refund tanpa pasangan, dicatat jadi pemasukan Lainnya');
+    }
+  });
+  return { add, del, refunds, log };
+}
+
 function syncBcaEmails(dryRun) {
   dryRun = dryRun === true; // dari trigger, argumennya event object
   const day = new Date(BCA_SINCE); day.setDate(day.getDate() - 1);
-  const q = 'from:PasporBCA@klikbca.com subject:BERHASIL after:' + Utilities.formatDate(day, 'Asia/Jakarta', 'yyyy/MM/dd');
-  const msgs = [];
-  GmailApp.search(q, 0, 50).forEach(th => th.getMessages().forEach(m => msgs.push(m)));
-  const done = {};
-  rows_(SH.tx).forEach(r => { if (r.source) done[r.source] = true; });
-  const rows = [], log = [];
-  msgs.forEach(m => {
-    const src = 'gmail:' + m.getId();
-    if (done[src]) return;
+  const q = 'from:PasporBCA@klikbca.com (subject:BERHASIL OR subject:"Pengembalian Dana") after:' +
+            Utilities.formatDate(day, 'Asia/Jakarta', 'yyyy/MM/dd');
+  const items = [], log = [];
+  GmailApp.search(q, 0, 50).forEach(th => th.getMessages().forEach(m => {
     const t = parseBcaDebit_(m.getPlainBody()) || parseBcaDebit_(htmlText_(m.getBody()));
-    if (!t) { log.push('⚠️ gak kebaca: ' + m.getSubject() + ' (' + m.getDate() + ')'); return; }
-    if (t.created_at < BCA_SINCE) return;
-    log.push(t.created_at + '  Rp' + t.amount + '  ' + t.merchant + '  →  ' + t.category + (t.subcategory ? ' › ' + t.subcategory : ''));
-    rows.push([Utilities.getUuid(), t.date, 'expense', t.amount, BCA_ACCOUNT, '', t.category, t.note, t.created_at, t.subcategory, src]);
-  });
-  if (rows.length && !dryRun) {
-    const lock = LockService.getScriptLock();
-    lock.waitLock(10000);
-    try {
-      if (rows.some(r => r[6] === NEED_CHECK) && !rows_(SH.cat).some(c => c.name === NEED_CHECK && c.type === 'expense'))
+    if (!t) return log.push('⚠️ gak kebaca: ' + m.getSubject() + ' (' + m.getDate() + ')');
+    items.push({ id: m.getId(), refund: /Pengembalian Dana/i.test(m.getSubject()), t });
+  }));
+  items.sort((a, b) => a.t.created_at.localeCompare(b.t.created_at));
+
+  const props = PropertiesService.getScriptProperties();
+  const lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    const s = sheet_(SH.tx), v = s.getDataRange().getValues(), h = v[0];
+    const iS = h.indexOf('source'), iA = h.indexOf('amount');
+    const existing = v.slice(1).map((r, k) => ({ row: k + 2, source: r[iS], amount: r[iA] })).filter(r => r.source);
+    const done = JSON.parse(props.getProperty('BCA_REFUNDS_DONE') || '[]');
+    const p = planBcaSync_(items, existing, done);
+    log.push.apply(log, p.log);
+    if (!dryRun) {
+      if (p.add.some(r => r[6] === NEED_CHECK) && !rows_(SH.cat).some(c => c.name === NEED_CHECK && c.type === 'expense'))
         sheet_(SH.cat).appendRow([NEED_CHECK, 'expense', '❓', '']);
-      const s = sheet_(SH.tx), start = s.getLastRow() + 1;
-      s.getRange(start, 2, rows.length, 1).setNumberFormat('@');
-      s.getRange(start, 9, rows.length, 1).setNumberFormat('@');
-      s.getRange(start, 1, rows.length, rows[0].length).setValues(rows);
-    } finally { lock.releaseLock(); }
-  }
+      p.del.sort((a, b) => b - a).forEach(r => s.deleteRow(r));
+      if (p.add.length) {
+        const start = s.getLastRow() + 1;
+        s.getRange(start, 2, p.add.length, 1).setNumberFormat('@');
+        s.getRange(start, 9, p.add.length, 1).setNumberFormat('@');
+        s.getRange(start, 1, p.add.length, p.add[0].length).setValues(p.add);
+      }
+      if (p.refunds.length) props.setProperty('BCA_REFUNDS_DONE', JSON.stringify(done.concat(p.refunds).slice(-300)));
+    }
+  } finally { lock.releaseLock(); }
   Logger.log((dryRun ? '[TES, gak ada yang dicatat]\n' : '') + (log.join('\n') || 'Gak ada email BCA baru.'));
   return log;
 }
