@@ -100,38 +100,44 @@ function htmlText_(html) {
 }
 
 // Logika murni (tanpa Gmail/Sheet). items: [{id, refund, t}] urut waktu; existing: [{row, source, amount}] dari sheet.
-// Debit → transaksi baru. Pengembalian dana → hapus debit yang merchant + nominalnya sama;
-// kalau debitnya gak ketemu, dicatat jadi pemasukan biar saldo tetap bener.
+// Debit → transaksi baru. Pengembalian dana → debit dengan merchant + nominal sama gak dicatat (atau dihapus kalau
+// udah terlanjur). Dihitung ulang tiap jalan, jadi aman walau debit & refund kebaca di run yang beda.
+// Refund yang debitnya gak ketemu sama sekali dicatat jadi pemasukan biar saldo tetap bener.
 function planBcaSync_(items, existing, refundsDone) {
-  const id = src => String(src).split('|')[0];
-  const seen = {}; existing.forEach(r => { if (r.source) seen[id(r.source)] = true; });
+  const idOf = src => String(src).split('|')[0].replace(/^gmail:/, '');
+  const merchantOf = src => { src = String(src); return src.indexOf('|') < 0 ? '' : src.slice(src.indexOf('|') + 1); };
+  const seen = {}; existing.forEach(r => { seen[idOf(r.source)] = true; });
+  const debits = items.filter(x => !x.refund), cancel = {};
   const add = [], del = [], refunds = [], log = [];
-  items.forEach(({ id: mid, refund, t }) => {
-    const src = 'gmail:' + mid;
-    if (seen[src] || refundsDone.indexOf(mid) >= 0 || t.created_at < BCA_SINCE) return;
-    const key = src => /\|/.test(src) && src.slice(src.indexOf('|') + 1) === t.merchant;
-    if (!refund) {
-      add.push([Utilities.getUuid(), t.date, 'expense', t.amount, BCA_ACCOUNT, '', t.category, t.note, t.created_at, t.subcategory, src + '|' + t.merchant]);
-      log.push(t.created_at + '  -Rp' + t.amount + '  ' + t.merchant + '  →  ' + t.category + (t.subcategory ? ' › ' + t.subcategory : ''));
+  const tag = t => t.created_at + '  Rp' + t.amount + '  ' + t.merchant;
+  items.filter(x => x.refund).forEach(({ id, t }) => {
+    const d = debits.filter(x => !cancel[x.id] && x.t.merchant === t.merchant && x.t.amount === t.amount && x.t.created_at <= t.created_at).pop();
+    if (d) { cancel[d.id] = true; return; }
+    if (seen[id] || refundsDone.indexOf(id) >= 0) return;
+    const ex = existing.find(r => merchantOf(r.source) === t.merchant && Number(r.amount) === t.amount && del.indexOf(r.row) < 0);
+    if (ex) { del.push(ex.row); refunds.push(id); log.push(tag(t) + '  ↩︎ refund  →  debitnya dihapus'); return; }
+    if (t.created_at < BCA_SINCE) return;
+    add.push([Utilities.getUuid(), t.date, 'income', t.amount, BCA_ACCOUNT, '', 'Lainnya', 'Refund ' + t.note, t.created_at, '', 'gmail:' + id + '|' + t.merchant]);
+    log.push(tag(t) + '  ↩︎ refund tanpa pasangan  →  pemasukan Lainnya');
+  });
+  debits.forEach(({ id, t }) => {
+    if (cancel[id]) {
+      const ex = existing.find(r => idOf(r.source) === id);
+      if (ex && del.indexOf(ex.row) < 0) { del.push(ex.row); log.push(tag(t) + '  ✗ di-refund  →  dihapus dari catatan'); }
+      else if (!ex) log.push(tag(t) + '  ✗ di-refund  →  gak dicatat');
       return;
     }
-    const i = add.findIndex(r => key(r[10]) && r[3] === t.amount);
-    const ex = existing.find(r => key(String(r.source)) && Number(r.amount) === t.amount && del.indexOf(r.row) < 0);
-    if (i >= 0) { add.splice(i, 1); refunds.push(mid); log.push(t.created_at + '  ↩︎ refund Rp' + t.amount + '  ' + t.merchant + '  →  debitnya gak jadi dicatat'); }
-    else if (ex) { del.push(ex.row); refunds.push(mid); log.push(t.created_at + '  ↩︎ refund Rp' + t.amount + '  ' + t.merchant + '  →  debitnya dihapus'); }
-    else {
-      add.push([Utilities.getUuid(), t.date, 'income', t.amount, BCA_ACCOUNT, '', 'Lainnya', 'Refund ' + t.note, t.created_at, '', src + '|' + t.merchant]);
-      log.push(t.created_at + '  +Rp' + t.amount + '  ' + t.merchant + '  →  refund tanpa pasangan, dicatat jadi pemasukan Lainnya');
-    }
+    if (seen[id] || t.created_at < BCA_SINCE) return;
+    add.push([Utilities.getUuid(), t.date, 'expense', t.amount, BCA_ACCOUNT, '', t.category, t.note, t.created_at, t.subcategory, 'gmail:' + id + '|' + t.merchant]);
+    log.push(tag(t) + '  →  ' + t.category + (t.subcategory ? ' › ' + t.subcategory : ''));
   });
   return { add, del, refunds, log };
 }
 
 function syncBcaEmails(dryRun) {
   dryRun = dryRun === true; // dari trigger, argumennya event object
-  const day = new Date(BCA_SINCE); day.setDate(day.getDate() - 1);
-  const q = 'from:PasporBCA@klikbca.com (subject:BERHASIL OR subject:"Pengembalian Dana") after:' +
-            Utilities.formatDate(day, 'Asia/Jakarta', 'yyyy/MM/dd');
+  // 7 hari terakhir: cukup buat nangkep refund yang telat, dan debit pasangannya ikut kebaca
+  const q = 'from:PasporBCA@klikbca.com (subject:BERHASIL OR subject:"Pengembalian Dana") newer_than:7d';
   const items = [], log = [];
   GmailApp.search(q, 0, 50).forEach(th => th.getMessages().forEach(m => {
     const t = parseBcaDebit_(m.getPlainBody()) || parseBcaDebit_(htmlText_(m.getBody()));
@@ -163,7 +169,7 @@ function syncBcaEmails(dryRun) {
       if (p.refunds.length) props.setProperty('BCA_REFUNDS_DONE', JSON.stringify(done.concat(p.refunds).slice(-300)));
     }
   } finally { lock.releaseLock(); }
-  Logger.log((dryRun ? '[TES, gak ada yang dicatat]\n' : '') + (log.join('\n') || 'Gak ada email BCA baru.'));
+  Logger.log((dryRun ? '[TES, gak ada yang dicatat]\n' : '') + (log.join('\n') || 'Gak ada perubahan.'));
   return log;
 }
 
