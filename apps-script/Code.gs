@@ -1,6 +1,6 @@
 // ===== Duitku — backend (Google Apps Script, bound ke Google Sheet) =====
 const SH = { tx: 'Transactions', acc: 'Accounts', cat: 'Categories' };
-const TX_HEAD = ['id', 'date', 'type', 'amount', 'account', 'to_account', 'category', 'note', 'created_at', 'subcategory'];
+const TX_HEAD = ['id', 'date', 'type', 'amount', 'account', 'to_account', 'category', 'note', 'created_at', 'subcategory', 'source'];
 const CAT_HEAD = ['name', 'type', 'icon', 'parent'];
 const DEFAULT_SUBS = [
   ['Wifi', 'expense', '📶', 'Tagihan'], ['Pulsa & Data', 'expense', '📱', 'Tagihan'],
@@ -63,6 +63,84 @@ function doPost(e) {
     res = { ok: false, error: String(err && err.message || err) };
   }
   return ContentService.createTextOutput(JSON.stringify(res)).setMimeType(ContentService.MimeType.JSON);
+}
+
+// ---------- Auto-catat dari email BCA (trigger tiap 5 menit) ----------
+// Sekali jalan dari editor: testBcaEmails() buat cek hasil baca (gak nulis apa-apa), lalu installBcaTrigger().
+const BCA_ACCOUNT = 'BCA';
+const BCA_SINCE = '2026-10-26T00:00:00';   // email sebelum ini gak dicatat (udah masuk dari import)
+const NEED_CHECK = 'Perlu dicek';           // kategori buat merchant yang belum dikenal
+// [pola merchant, kategori, sub kategori, catatan]
+const MERCHANT_RULES = [
+  [/^grab/i, 'Transportation', 'Ojek Online', 'Grab'],
+  [/gojek|goride|gocar/i, 'Transportation', 'Ojek Online', 'Gojek'],
+  [/indomaret|indomart/i, 'Belanja', 'Indomart', 'Indomaret'],
+  [/shopee/i, 'Belanja', 'Shopee', 'Shopee'],
+  [/blibli/i, 'Belanja', 'Blibli', 'Blibli'],
+  [/spotify/i, 'Tagihan', 'Spotify', 'Spotify'],
+  [/netflix/i, 'Tagihan', 'Netflix', 'Netflix'],
+  [/vidio/i, 'Tagihan', 'Vidio', 'Vidio'],
+];
+
+// Email "Informasi Transaksi Online - Debit BCA [BERHASIL]" → {date, created_at, amount, category, subcategory, note}
+function parseBcaDebit_(text) {
+  const f = k => { const m = text.match(new RegExp(k + '\\s*:\\s*([^\\n\\r]+)', 'i')); return m ? m[1].trim() : ''; };
+  const merchant = f('Merchant'), w = f('Waktu').match(/(\d{2})-(\d{2})-(\d{4})\s+(\d{2}:\d{2}:\d{2})/);
+  const amount = Number(f('Nilai Transaksi').replace(/^[A-Z]{3}\s*/i, '').replace(/,\d{1,2}$/, '').replace(/\D/g, ''));
+  if (!merchant || !w || !amount) return null;
+  const rule = MERCHANT_RULES.find(r => r[0].test(merchant));
+  const date = w[3] + '-' + w[2] + '-' + w[1];
+  return { date, created_at: date + 'T' + w[4], amount, merchant,
+           category: rule ? rule[1] : NEED_CHECK, subcategory: rule ? rule[2] : '', note: rule ? rule[3] : merchant };
+}
+
+function htmlText_(html) {
+  return html.replace(/<br\s*\/?>|<\/(p|div|tr|td|th|li)>/gi, '\n').replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/[ \t]+/g, ' ');
+}
+
+function syncBcaEmails(dryRun) {
+  dryRun = dryRun === true; // dari trigger, argumennya event object
+  const day = new Date(BCA_SINCE); day.setDate(day.getDate() - 1);
+  const q = 'from:PasporBCA@klikbca.com subject:BERHASIL after:' + Utilities.formatDate(day, 'Asia/Jakarta', 'yyyy/MM/dd');
+  const msgs = [];
+  GmailApp.search(q, 0, 50).forEach(th => th.getMessages().forEach(m => msgs.push(m)));
+  const done = {};
+  rows_(SH.tx).forEach(r => { if (r.source) done[r.source] = true; });
+  const rows = [], log = [];
+  msgs.forEach(m => {
+    const src = 'gmail:' + m.getId();
+    if (done[src]) return;
+    const t = parseBcaDebit_(m.getPlainBody()) || parseBcaDebit_(htmlText_(m.getBody()));
+    if (!t) { log.push('⚠️ gak kebaca: ' + m.getSubject() + ' (' + m.getDate() + ')'); return; }
+    if (t.created_at < BCA_SINCE) return;
+    log.push(t.created_at + '  Rp' + t.amount + '  ' + t.merchant + '  →  ' + t.category + (t.subcategory ? ' › ' + t.subcategory : ''));
+    rows.push([Utilities.getUuid(), t.date, 'expense', t.amount, BCA_ACCOUNT, '', t.category, t.note, t.created_at, t.subcategory, src]);
+  });
+  if (rows.length && !dryRun) {
+    const lock = LockService.getScriptLock();
+    lock.waitLock(10000);
+    try {
+      if (rows.some(r => r[6] === NEED_CHECK) && !rows_(SH.cat).some(c => c.name === NEED_CHECK && c.type === 'expense'))
+        sheet_(SH.cat).appendRow([NEED_CHECK, 'expense', '❓', '']);
+      const s = sheet_(SH.tx), start = s.getLastRow() + 1;
+      s.getRange(start, 2, rows.length, 1).setNumberFormat('@');
+      s.getRange(start, 9, rows.length, 1).setNumberFormat('@');
+      s.getRange(start, 1, rows.length, rows[0].length).setValues(rows);
+    } finally { lock.releaseLock(); }
+  }
+  Logger.log((dryRun ? '[TES, gak ada yang dicatat]\n' : '') + (log.join('\n') || 'Gak ada email BCA baru.'));
+  return log;
+}
+
+function testBcaEmails() { return syncBcaEmails(true); }
+
+function installBcaTrigger() {
+  ScriptApp.getProjectTriggers().filter(t => t.getHandlerFunction() === 'syncBcaEmails').forEach(t => ScriptApp.deleteTrigger(t));
+  ScriptApp.newTrigger('syncBcaEmails').timeBased().everyMinutes(5).create();
+  sheet_(SH.tx).getRange('B:B').setNumberFormat('@'); // tanggal tetap teks yyyy-MM-dd
+  sheet_(SH.tx).getRange('I:I').setNumberFormat('@');
+  syncBcaEmails();
 }
 
 // ---------- helpers ----------
