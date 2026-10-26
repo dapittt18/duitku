@@ -82,6 +82,8 @@ main{padding:18px 16px 0}
 .im b{display:block;font-weight:700;font-size:14px}
 .im small{display:block;color:var(--mut);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .ia{font-weight:800;font-size:14px;white-space:nowrap}
+.ia small{display:block;text-align:right;color:var(--mut);font-size:11px;font-weight:600}
+.ac.tap{cursor:pointer;transition:transform .15s}.ac.tap:active{transform:scale(.97)}
 .in{color:var(--in)}.out{color:var(--out)}.tr{color:var(--tr)}
 
 /* empty */
@@ -643,9 +645,45 @@ function renderAcc() {
   const cnt = {};
   D.transactions.forEach(t => { cnt[t.account] = (cnt[t.account] || 0) + 1; if (t.to_account) cnt[t.to_account] = (cnt[t.to_account] || 0) + 1; });
   $('view').innerHTML = `<div class="sec"><h3>Dompet lo</h3><span>${D.accounts.length} akun</span></div><div class="agrid">` +
-    D.accounts.map((a, i) => `<div class="ac" style="--i:${i};background:${ACC_GRAD[i % ACC_GRAD.length]}">
+    D.accounts.map((a, i) => `<div class="ac tap" data-n="${esc(a.name)}" onclick="openAccSheet(this.dataset.n)" style="--i:${i};background:${ACC_GRAD[i % ACC_GRAD.length]}">
       <div class="n">${esc(a.name)}</div><div><small>${cnt[a.name] || 0} transaksi</small><b>${rp(b[a.name])}</b></div></div>`).join('') +
     `<button class="ac addc" onclick="newAcc()"><span>+</span>Tambah akun</button></div>`;
+}
+
+// ---------- detail akun: semua transaksi + saldo berjalan ----------
+const accDelta = (t, name) => t.type === 'income' ? +t.amount : t.type === 'expense' ? -t.amount : t.to_account === name ? +t.amount : -t.amount;
+function openAccSheet(name) {
+  const i = D.accounts.findIndex(a => a.name === name), a = D.accounts[i];
+  const init = Number(a.initial_balance) || 0;
+  const list = D.transactions.filter(t => t.account === name || t.to_account === name)
+    .sort((x, y) => (x.date + x.created_at).localeCompare(y.date + y.created_at));
+  let run = init, inS = 0, outS = 0;
+  const rows = list.map(t => { const d = accDelta(t, name); run += d; d > 0 ? inS += d : outS -= d; return {t, d, run}; }).reverse();
+  const groups = {};
+  rows.forEach(r => (groups[r.t.date] = groups[r.t.date] || []).push(r));
+  const row = ({t, d, run}) => {
+    const isT = t.type === 'transfer';
+    const title = isT ? (d > 0 ? 'Dari ' + t.account : 'Ke ' + t.to_account) : (t.subcategory || t.category);
+    const sub = isT ? esc(t.note) : [t.subcategory ? esc(t.category) : '', esc(t.note)].filter(Boolean).join(' · ');
+    const ic = isT ? '🔁' : (t.subcategory && subIcon(t.subcategory, t.category, t.type)) || icon(t.category, t.type);
+    return `<button class="it" data-id="${esc(t.id)}">
+      <span class="ci" style="background:${isT ? 'rgba(59,130,246,.15)' : cBg(t.category)}">${ic}</span>
+      <span class="im"><b>${esc(title)}</b><small>${sub || (isT ? 'Transfer' : '')}</small></span>
+      <span class="ia ${d > 0 ? 'in' : 'out'}">${d > 0 ? '+' : '-'}${rp(Math.abs(d))}<small>${rp(run)}</small></span></button>`;
+  };
+  $('sheet2').style.setProperty('--acc', 'var(--pri)');
+  $('sheet2').innerHTML = `<div class="grab"></div>
+    <div class="ac" style="background:${ACC_GRAD[i % ACC_GRAD.length]};min-height:0;gap:14px;animation:none">
+      <div class="n">${esc(name)}</div><div><small>Saldo sekarang · ${list.length} transaksi</small><b style="font-size:24px">${rp(run)}</b></div></div>
+    <div class="kpis" style="margin:12px 0 4px">
+      <div class="kpi" style="background:var(--soft);box-shadow:none"><small>Total masuk</small><b class="in">+${rp(inS)}</b></div>
+      <div class="kpi" style="background:var(--soft);box-shadow:none"><small>Total keluar</small><b class="out">-${rp(outS)}</b></div>
+    </div>
+    <div id="m_acc">${Object.keys(groups).map(d => `<div class="gh" style="padding-top:12px"><b>${dayLabel(d)}</b></div>
+      <div class="list" style="background:var(--soft);box-shadow:none">${groups[d].map(row).join('')}</div>`).join('')}</div>
+    <div class="gh" style="padding-top:12px"><b>Saldo awal</b><span>${rp(init)}</span></div>`;
+  $('m_acc').onclick = e => { const b = e.target.closest('[data-id]'); if (b) { closeSheet('ov2'); openForm(b.dataset.id); } };
+  openSheet('ov2');
 }
 
 function renderCat(ym) {
