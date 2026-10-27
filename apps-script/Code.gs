@@ -80,6 +80,8 @@ const MERCHANT_RULES = [
   [/spotify/i, 'Tagihan', 'Spotify', 'Spotify'],
   [/netflix/i, 'Tagihan', 'Netflix', 'Netflix'],
   [/vidio/i, 'Tagihan', 'Vidio', 'Vidio'],
+  [/ohaio/i, 'Jajan', 'Kopi', 'OHAIO'],
+  [/tianlala/i, 'Food', 'Malam', 'Tianlala'],
   [/kopi|coffee|caf[eé]|starbucks|janji jiwa|tomoro|\bfore\b/i, 'Jajan', 'Kopi', ''],
   [/restaurant|resto|rumah makan|\brm\b|warung|warteg|bakmi|\bmie\b|ayam|sate|nasi|padang|seafood|sushi|ramen|bakso|soto|pizza|burger|kfc|mcd|hokben|solaria|geprek|kitchen|dapur|eatery|grill/i, 'Food', 'MEAL', ''],
 ];
