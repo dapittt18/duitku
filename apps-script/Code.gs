@@ -68,7 +68,7 @@ function doPost(e) {
 // ---------- Auto-catat dari email BCA (trigger tiap 5 menit) ----------
 // Sekali jalan dari editor: testBcaEmails() buat cek hasil baca (gak nulis apa-apa), lalu installBcaTrigger().
 const BCA_ACCOUNT = 'BCA';
-const BCA_SINCE = '2026-10-26T00:00:00';   // email sebelum ini gak dicatat (udah masuk dari import)
+const BCA_SINCE = '2026-10-27T00:00:00';   // email sebelum ini gak dicatat
 const NEED_CHECK = 'Perlu dicek';           // kategori buat merchant yang belum dikenal
 // [pola merchant, kategori, sub kategori, catatan]. Sub 'MEAL' = Pagi/Siang/Malam sesuai jam; catatan kosong = nama merchant.
 const MERCHANT_RULES = [
