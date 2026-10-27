@@ -70,7 +70,7 @@ function doPost(e) {
 const BCA_ACCOUNT = 'BCA';
 const BCA_SINCE = '2026-10-26T00:00:00';   // email sebelum ini gak dicatat (udah masuk dari import)
 const NEED_CHECK = 'Perlu dicek';           // kategori buat merchant yang belum dikenal
-// [pola merchant, kategori, sub kategori, catatan]
+// [pola merchant, kategori, sub kategori, catatan]. Sub 'MEAL' = Pagi/Siang/Malam sesuai jam; catatan kosong = nama merchant.
 const MERCHANT_RULES = [
   [/^grab/i, 'Transportation', 'Ojek Online', 'Grab'],
   [/gojek|goride|gocar/i, 'Transportation', 'Ojek Online', 'Gojek'],
@@ -80,22 +80,54 @@ const MERCHANT_RULES = [
   [/spotify/i, 'Tagihan', 'Spotify', 'Spotify'],
   [/netflix/i, 'Tagihan', 'Netflix', 'Netflix'],
   [/vidio/i, 'Tagihan', 'Vidio', 'Vidio'],
+  [/kopi|coffee|caf[eé]|starbucks|janji jiwa|tomoro|\bfore\b/i, 'Jajan', 'Kopi', ''],
+  [/restaurant|resto|rumah makan|\brm\b|warung|warteg|bakmi|\bmie\b|ayam|sate|nasi|padang|seafood|sushi|ramen|bakso|soto|pizza|burger|kfc|mcd|hokben|solaria|geprek|kitchen|dapur|eatery|grill/i, 'Food', 'MEAL', ''],
 ];
+const MONTHS_ = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, mei: 5, jun: 6, jul: 7, aug: 8, agu: 8, sep: 9, oct: 10, okt: 10, nov: 11, dec: 12, des: 12 };
 
-// Email "Informasi Transaksi Online - Debit BCA [BERHASIL]" → {date, created_at, amount, category, subcategory, note}
+const field_ = (text, k) => { const m = text.match(new RegExp(k + '\\s*:\\s*([^\\n\\r]+)', 'i')); return m ? m[1].trim() : ''; };
+
+// "IDR 78.995" / "IDR 1.250.000,00" / "IDR 70,600.00" → angka rupiah
+function toAmount_(s) {
+  s = String(s).replace(/^[A-Z]{3}\s*/i, '').trim();
+  const dec = s.match(/^(.*\d)[.,]\d{2}$/);
+  return Number((dec ? dec[1] : s).replace(/\D/g, ''));
+}
+
+// {date, created_at, amount, merchant} → tambah category, subcategory, note
+function categorize_(t) {
+  const hour = Number(t.created_at.slice(11, 13)), meal = hour < 11 ? 'Pagi' : hour < 14 ? 'Siang' : 'Malam';
+  // Grab > 50rb pasti makan
+  const rule = /^grab/i.test(t.merchant) && t.amount > 50000 ? [null, 'Food', 'MEAL', 'Grab']
+    : MERCHANT_RULES.find(r => r[0].test(t.merchant));
+  t.category = rule ? rule[1] : NEED_CHECK;
+  t.subcategory = !rule ? '' : rule[2] === 'MEAL' ? meal : rule[2];
+  t.note = rule && rule[3] ? rule[3] : t.merchant;
+  return t;
+}
+
+// Email "Informasi Transaksi Online - Debit BCA [BERHASIL]" / "Pengembalian Dana" (PasporBCA@klikbca.com)
 function parseBcaDebit_(text) {
-  const f = k => { const m = text.match(new RegExp(k + '\\s*:\\s*([^\\n\\r]+)', 'i')); return m ? m[1].trim() : ''; };
-  const merchant = f('Merchant'), w = f('Waktu').match(/(\d{2})-(\d{2})-(\d{4})\s+(\d{2}:\d{2}:\d{2})/);
-  const amount = Number(f('Nilai Transaksi').replace(/^[A-Z]{3}\s*/i, '').replace(/,\d{1,2}$/, '').replace(/\D/g, ''));
+  const merchant = field_(text, 'Merchant'), w = field_(text, 'Waktu').match(/(\d{2})-(\d{2})-(\d{4})\s+(\d{2}:\d{2}:\d{2})/);
+  const amount = toAmount_(field_(text, 'Nilai Transaksi'));
   if (!merchant || !w || !amount) return null;
-  const hour = Number(w[4].slice(0, 2));
-  // Grab > 50rb pasti makan: sebelum jam 11 pagi, 11:00–13:59 siang, selebihnya malam
-  const rule = /^grab/i.test(merchant) && amount > 50000
-    ? [null, 'Food', hour < 11 ? 'Pagi' : hour < 14 ? 'Siang' : 'Malam', 'Grab']
-    : MERCHANT_RULES.find(r => r[0].test(merchant));
   const date = w[3] + '-' + w[2] + '-' + w[1];
-  return { date, created_at: date + 'T' + w[4], amount, merchant,
-           category: rule ? rule[1] : NEED_CHECK, subcategory: rule ? rule[2] : '', note: rule ? rule[3] : merchant };
+  return categorize_({ date, created_at: date + 'T' + w[4], amount, merchant });
+}
+
+// Email "Internet Transaction Journal" (bca@bca.co.id, myBCA). Cuma QRIS Payment yang Successful;
+// jenis lain → {skip: alasan} biar kelihatan di log tapi gak dicatat.
+function parseBcaQris_(text) {
+  const status = field_(text, 'Status'), type = field_(text, 'Transaction Type');
+  if (!status && !type) return null;
+  if (!/^successful/i.test(status)) return { skip: (type || '?') + ' status ' + (status || '?') };
+  if (!/qris/i.test(type)) return { skip: type || '?' };
+  const merchant = field_(text, 'Payment to'), amount = toAmount_(field_(text, 'Total Payment'));
+  const w = field_(text, 'Transaction Date').match(/(\d{1,2})\s+([A-Za-z]{3})\w*\s+(\d{4})\s+(\d{2}:\d{2}:\d{2})/);
+  const mon = w && MONTHS_[w[2].toLowerCase()];
+  if (!merchant || !amount || !mon) return null;
+  const date = w[3] + '-' + ('0' + mon).slice(-2) + '-' + ('0' + w[1]).slice(-2);
+  return categorize_({ date, created_at: date + 'T' + w[4], amount, merchant });
 }
 
 function htmlText_(html) {
@@ -141,13 +173,15 @@ function planBcaSync_(items, existing, refundsDone) {
 function syncBcaEmails(dryRun) {
   dryRun = dryRun === true; // dari trigger, argumennya event object
   // 7 hari terakhir: cukup buat nangkep refund yang telat, dan debit pasangannya ikut kebaca
-  const q = 'from:PasporBCA@klikbca.com (subject:BERHASIL OR subject:"Pengembalian Dana") newer_than:7d';
-  const items = [], log = [];
-  GmailApp.search(q, 0, 50).forEach(th => th.getMessages().forEach(m => {
-    const t = parseBcaDebit_(m.getPlainBody()) || parseBcaDebit_(htmlText_(m.getBody()));
+  const items = [], log = [], skipped = {};
+  const read = (q, parse, isRefund) => GmailApp.search(q + ' newer_than:7d', 0, 50).forEach(th => th.getMessages().forEach(m => {
+    const t = parse(m.getPlainBody()) || parse(htmlText_(m.getBody()));
     if (!t) return log.push('⚠️ gak kebaca: ' + m.getSubject() + ' (' + m.getDate() + ')');
-    items.push({ id: m.getId(), refund: /Pengembalian Dana/i.test(m.getSubject()), t });
+    if (t.skip) return skipped[t.skip] = (skipped[t.skip] || 0) + 1;
+    items.push({ id: m.getId(), refund: isRefund(m), t });
   }));
+  read('from:PasporBCA@klikbca.com (subject:BERHASIL OR subject:"Pengembalian Dana")', parseBcaDebit_, m => /Pengembalian Dana/i.test(m.getSubject()));
+  read('from:bca@bca.co.id subject:"Internet Transaction Journal"', parseBcaQris_, () => false);
   items.sort((a, b) => a.t.created_at.localeCompare(b.t.created_at));
 
   const props = PropertiesService.getScriptProperties();
@@ -173,7 +207,12 @@ function syncBcaEmails(dryRun) {
       if (p.refunds.length) props.setProperty('BCA_REFUNDS_DONE', JSON.stringify(done.concat(p.refunds).slice(-300)));
     }
   } finally { lock.releaseLock(); }
-  Logger.log((dryRun ? '[TES, gak ada yang dicatat]\n' : '') + (log.join('\n') || 'Gak ada perubahan.'));
+  const perDay = {};
+  items.forEach(({ t }) => { if (t.created_at >= BCA_SINCE) { const d = perDay[t.date] = perDay[t.date] || [0, 0]; d[0]++; d[1] += t.amount; } });
+  const summary = Object.keys(perDay).sort().map(d => '  ' + d + ': ' + perDay[d][0] + ' email, Rp' + perDay[d][1])
+    .concat(Object.keys(skipped).map(k => '  dilewati: ' + k + ' (' + skipped[k] + 'x)'));
+  Logger.log((dryRun ? '[TES, gak ada yang dicatat]\n' : '') + (log.join('\n') || 'Gak ada perubahan.') +
+    (dryRun && summary.length ? '\n\nEmail BCA per hari (sebelum dicoret refund):\n' + summary.join('\n') : ''));
   return log;
 }
 
