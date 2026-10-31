@@ -429,7 +429,7 @@ function submitToken() {
 $('lk_tok').onkeydown = e => { if (e.key === 'Enter') submitToken(); };
 async function load() {
   try {
-    D = await call('getData'); if (D.lastDate) lastDate = D.lastDate; render(); booted = true;
+    D = await call('getData'); render(); booted = true;
     if (offerBio) { offerBio = false; maybeOfferBio(); }
   }
   catch (e) { $('view').innerHTML = emptyState('⚠️', 'Gagal ambil data', esc(e.message || e), '<button class="pbtn" onclick="load()">Coba lagi</button>'); }
@@ -722,8 +722,10 @@ function closeSheet(id) { $(id).classList.remove('show'); }
 // ---------- form transaksi ----------
 let famt = '', fdate = '', fnote = '', lastAcc = '';
 const store = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
-try { lastDate = localStorage.getItem('duitku_lastDate') || ''; lastAcc = localStorage.getItem('duitku_lastAcc') || ''; } catch (e) {}
-function setLastDate(d) { lastDate = d; store('duitku_lastDate', d); }
+try { lastAcc = localStorage.getItem('duitku_lastAcc') || ''; localStorage.removeItem('duitku_lastDate'); } catch (e) {}
+// tanggal yang terakhir dipilih cuma diinget selama app kebuka & di hari yang sama; buka ulang = hari ini
+let lastDateOn = '';
+function setLastDate(d) { lastDate = d; lastDateOn = today(); }
 const buzz = () => { try { navigator.vibrate && navigator.vibrate(8); } catch (e) {} };
 const addDays = n => { const d = new Date(); d.setDate(d.getDate() + n); return ymOf(d) + '-' + pad(d.getDate()); };
 function dateLabel(d) {
@@ -843,14 +845,12 @@ document.querySelectorAll('#f_type button').forEach(b => b.onclick = () => { buz
 
 // ---------- picker tanggal / akun / catatan ----------
 function pickDate() {
-  const opts = [0, -1, -2, -3].map(addDays);
   $('sheet2').style.setProperty('--acc', TYPE_COLOR[ftype]);
-  $('sheet2').innerHTML = `<div class="grab"></div><h2>Tanggal</h2><div class="lst">` +
-    opts.map(d => `<button class="${d === fdate ? 'on' : ''}" data-d="${d}">${dateLabel(d)}<small>${new Date(d + 'T00:00').toLocaleDateString('id-ID', {weekday: 'long', day: 'numeric', month: 'short'})}</small></button>`).join('') +
-    `</div><div class="lbl">Tanggal lain</div><input type="date" class="inp" id="m_date" value="${fdate}">`;
-  $('sheet2').querySelector('.lst').onclick = e => { const b = e.target.closest('button'); if (b) setDate(b.dataset.d); };
+  $('sheet2').innerHTML = `<div class="grab"></div><h2>Tanggal</h2>
+    <input type="date" class="inp" id="m_date" style="margin-top:12px" value="${fdate}">`;
   $('m_date').onchange = e => { if (e.target.value) setDate(e.target.value); };
   openSheet('ov2');
+  try { $('m_date').showPicker(); } catch (e) {}
 }
 function setDate(d) { fdate = d; if (!editing) setLastDate(d); closeSheet('ov2'); updDock(); }
 
@@ -879,7 +879,7 @@ function setNote() { fnote = $('m_note').value.trim(); closeSheet('ov2'); updDoc
 function openForm(id) {
   editing = id ? D.transactions.find(t => t.id === id) : null;
   const accOk = n => D.accounts.some(a => a.name === n);
-  const t = editing || {type: 'expense', date: lastDate || today(), account: accOk(lastAcc) ? lastAcc : D.accounts[0]?.name, amount: ''};
+  const t = editing || {type: 'expense', date: (lastDateOn === today() && lastDate) || today(), account: accOk(lastAcc) ? lastAcc : D.accounts[0]?.name, amount: ''};
   fcat = t.category || ''; fsub = t.subcategory || '';
   facc = t.account || ''; fto = t.to_account || D.accounts.find(a => a.name !== facc)?.name || '';
   famt = t.amount ? String(Math.round(t.amount)) : '';
