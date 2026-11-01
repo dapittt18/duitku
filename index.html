@@ -679,10 +679,11 @@ function openAccSheet(name) {
       <div class="kpi" style="background:var(--soft);box-shadow:none"><small>Total masuk</small><b class="in">+${rp(inS)}</b></div>
       <div class="kpi" style="background:var(--soft);box-shadow:none"><small>Total keluar</small><b class="out">-${rp(outS)}</b></div>
     </div>
-    <div id="m_acc">${Object.keys(groups).map(d => `<div class="gh" style="padding-top:12px"><b>${dayLabel(d)}</b></div>
+    <button class="save" style="margin:8px 0 4px" data-n="${esc(name)}" onclick="formFromAcc(this.dataset.n)">+ Catat di ${esc(name)}</button>
+    <div id="m_acc" data-n="${esc(name)}">${Object.keys(groups).map(d => `<div class="gh" style="padding-top:12px"><b>${dayLabel(d)}</b></div>
       <div class="list" style="background:var(--soft);box-shadow:none">${groups[d].map(row).join('')}</div>`).join('')}</div>
     <div class="gh" style="padding-top:12px"><b>Saldo awal</b><span>${rp(init)}</span></div>`;
-  $('m_acc').onclick = e => { const b = e.target.closest('[data-id]'); if (b) { closeSheet('ov2'); openForm(b.dataset.id); } };
+  $('m_acc').onclick = e => { const b = e.target.closest('[data-id]'); if (b) formFromAcc(name, b.dataset.id); };
   openSheet('ov2');
 }
 
@@ -717,7 +718,15 @@ function openCatSheet(name, type) {
 
 // ---------- sheets ----------
 function openSheet(id) { $(id).classList.add('show'); }
-function closeSheet(id) { $(id).classList.remove('show'); }
+// form transaksi yang dibuka dari detail akun: akunnya udah kepilih, dan pas form ditutup balik lagi ke detail akun itu
+let accReturn = '';
+function formFromAcc(name, id) { closeSheet('ov2'); accReturn = name; openForm(id, name); }
+function closeSheet(id) {
+  $(id).classList.remove('show');
+  if (id === 'ov' && accReturn) { const n = accReturn; accReturn = ''; openAccSheet(n); }
+}
+// abis simpan/hapus, kalau detail akun lagi kebuka, gambar ulang pake data terbaru
+const refreshAccSheet = () => { if ($('ov2').classList.contains('show') && $('m_acc')) openAccSheet($('m_acc').dataset.n); };
 
 // ---------- form transaksi ----------
 let famt = '', fdate = '', fnote = '', lastAcc = '';
@@ -876,10 +885,10 @@ function pickNote() {
 }
 function setNote() { fnote = $('m_note').value.trim(); closeSheet('ov2'); updDock(); }
 
-function openForm(id) {
+function openForm(id, acc) {
   editing = id ? D.transactions.find(t => t.id === id) : null;
   const accOk = n => D.accounts.some(a => a.name === n);
-  const t = editing || {type: 'expense', date: (lastDateOn === today() && lastDate) || today(), account: accOk(lastAcc) ? lastAcc : D.accounts[0]?.name, amount: ''};
+  const t = editing || {type: 'expense', date: (lastDateOn === today() && lastDate) || today(), account: accOk(acc) ? acc : accOk(lastAcc) ? lastAcc : D.accounts[0]?.name, amount: ''};
   fcat = t.category || ''; fsub = t.subcategory || '';
   facc = t.account || ''; fto = t.to_account || D.accounts.find(a => a.name !== facc)?.name || '';
   famt = t.amount ? String(Math.round(t.amount)) : '';
@@ -896,14 +905,14 @@ async function save() {
   if (!t.amount) return toast('Nominalnya diisi dulu ya');
   if (!facc) return toast('Pilih akunnya dulu');
   if (ftype === 'transfer' && facc === fto) return toast('Akun asal & tujuan gak boleh sama');
-  if (!editing) { setLastDate(fdate); lastAcc = facc; store('duitku_lastAcc', facc); }
+  if (!editing) { setLastDate(fdate); if (!accReturn) { lastAcc = facc; store('duitku_lastAcc', facc); } }
   closeSheet('ov');
-  D = await call('saveTransaction', t); render(); toast(editing ? 'Perubahan disimpan ✓' : 'Tersimpan ✓');
+  D = await call('saveTransaction', t); render(); refreshAccSheet(); toast(editing ? 'Perubahan disimpan ✓' : 'Tersimpan ✓');
 }
 async function del() {
   if (!editing || !confirm('Hapus transaksi ini?')) return;
   closeSheet('ov');
-  D = await call('deleteTransaction', editing.id); render(); toast('Transaksi dihapus');
+  D = await call('deleteTransaction', editing.id); render(); refreshAccSheet(); toast('Transaksi dihapus');
 }
 
 function newAcc() {
