@@ -184,16 +184,19 @@ main{padding:18px 16px 0}
 .kp{display:grid;grid-template-columns:repeat(4,1fr);grid-auto-rows:50px;gap:8px}
 .kp button{border:0;background:var(--soft);border-radius:15px;font-size:23px;font-weight:700;color:var(--tx);transition:transform .08s,background .15s;user-select:none;-webkit-user-select:none;touch-action:manipulation}
 .kp button:active{background:var(--line);transform:scale(.95)}
-.kp [data-k="000"],.kp [data-k="00"]{font-size:18px;color:var(--acc)}
+.kp [data-k="000"]{font-size:18px;color:var(--acc)}
+.kp [data-k="+"],.kp [data-k="-"]{font-size:26px;color:var(--acc)}
 .kp [data-k="del"],.kp [data-k="C"]{color:var(--mut);font-size:19px}
-.kp .ok{grid-row:span 2;background:var(--acc);color:#fff;font-size:14px;font-weight:800;box-shadow:0 10px 22px -10px var(--acc);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px}
-.kp .ok span{font-size:26px;line-height:1}
+.kp .ok{background:var(--acc);color:#fff;font-size:14px;font-weight:800;box-shadow:0 10px 22px -10px var(--acc);display:flex;align-items:center;justify-content:center;gap:4px}
+.kp .ok span{font-size:18px;line-height:1}
 .kp .ok:active{background:var(--acc);filter:brightness(.92)}
 .sheet.tx{height:auto;max-height:94vh;max-height:94dvh;overflow-y:auto;display:block}
 .disp{display:block;text-align:center;padding:16px 0 14px}
 .amtv{display:block;font-size:42px;font-weight:800;letter-spacing:-1.2px;line-height:1.1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .amtv i{font-style:normal;font-size:20px;color:var(--acc);margin-right:5px;vertical-align:8px;letter-spacing:0}
 .amtv.zero{color:var(--line)}
+.amtv.expr{font-size:28px;letter-spacing:-.5px}
+.amteq{display:block;color:var(--mut);font-size:14px;font-weight:700;margin-top:4px;min-height:20px}
 .catrow{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .catbtn{flex:1;min-width:0;display:flex;align-items:center;gap:12px;border:0;background:var(--soft);border-radius:16px;padding:9px 12px;text-align:left;color:var(--tx);transition:transform .1s}
 .catbtn:active{transform:scale(.98)}
@@ -324,7 +327,7 @@ main{padding:18px 16px 0}
       </div>
       <button class="ib del" id="b_del" onclick="del()" aria-label="Hapus">🗑</button>
     </div>
-    <div class="disp"><b class="amtv" id="d_amt"></b></div>
+    <div class="disp"><b class="amtv" id="d_amt"></b><small class="amteq" id="d_eq"></small></div>
     <div class="txdock">
       <div class="catrow" id="w_cat">
         <button class="catbtn" id="b_cat" onclick="pickCat()"><span class="ci" id="c_ic">❔</span><span class="cl"><small>Kategori</small><b id="c_lbl">Pilih kategori</b></span><i class="cv">▾</i></button>
@@ -341,9 +344,9 @@ main{padding:18px 16px 0}
       </div>
       <div class="kp" id="kp">
         <button data-k="1">1</button><button data-k="2">2</button><button data-k="3">3</button><button data-k="del">⌫</button>
-        <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button><button data-k="000">000</button>
-        <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button><button class="ok" data-k="ok"><span>✓</span>Simpan</button>
-        <button data-k="C">C</button><button data-k="0">0</button><button data-k="00">00</button>
+        <button data-k="4">4</button><button data-k="5">5</button><button data-k="6">6</button><button data-k="-">−</button>
+        <button data-k="7">7</button><button data-k="8">8</button><button data-k="9">9</button><button data-k="+">+</button>
+        <button data-k="C">C</button><button data-k="0">0</button><button data-k="000">000</button><button class="ok" data-k="ok"><span>✓</span>Simpan</button>
       </div>
     </div>
   </div>
@@ -813,8 +816,11 @@ function updDock() {
   $('c_lbl').textContent = fcat ? fcat + (fsub ? ' › ' + fsub : '') : 'Pilih kategori';
   $('b_cat').classList.toggle('empty', !fcat);
   $('t_from').textContent = facc || 'Pilih'; $('t_to').textContent = fto || 'Pilih';
-  $('d_amt').innerHTML = '<i>Rp</i>' + (famt ? Number(famt).toLocaleString('id-ID') : '0');
+  const isExpr = /[+-]/.test(famt);
+  $('d_amt').innerHTML = '<i>Rp</i>' + (famt ? fmtExpr(famt) : '0');
   $('d_amt').classList.toggle('zero', !famt);
+  $('d_amt').classList.toggle('expr', isExpr);
+  $('d_eq').textContent = isExpr ? '= ' + rp(calcAmt(famt)) : '';
   $('p_date').querySelector('span').textContent = dateLabel(fdate);
   $('p_acc').querySelector('span').textContent = facc || 'Akun';
   $('p_note').querySelector('span').textContent = fnote || 'Catatan';
@@ -822,11 +828,16 @@ function updDock() {
 }
 
 // ---------- keypad ----------
+// nominal bisa berupa hitungan: "25000+12000-500" → 36.500
+const calcAmt = s => String(s).replace(/[+-]$/, '').split(/(?=[+-])/).reduce((a, x) => a + (Number(x) || 0), 0);
+const fmtExpr = s => s.replace(/\d+/g, d => Number(d).toLocaleString('id-ID')).replace(/[+-]/g, o => o === '+' ? ' + ' : ' − ');
 function kpPress(k) {
   if (k === 'ok') return save();
+  const seg = famt.split(/[+-]/).pop();
   if (k === 'del') famt = famt.slice(0, -1);
   else if (k === 'C') famt = '';
-  else if (famt || !/^0+$/.test(k)) famt = (famt + k).slice(0, 13);
+  else if (k === '+' || k === '-') { if (famt) famt = famt.replace(/[+-]$/, '') + k; }
+  else if ((seg || !/^0+$/.test(k)) && seg.length < 13 && famt.length < 60) famt += k;
   buzz(); updDock();
 }
 let kpHold, kpHeld = false;
@@ -845,7 +856,7 @@ $('kp').addEventListener('click', e => {
 document.addEventListener('keydown', e => {
   if (!$('ov').classList.contains('show') || $('ov2').classList.contains('show')) return;
   if (/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)) return;
-  if (/^\d$/.test(e.key)) kpPress(e.key);
+  if (/^[\d+-]$/.test(e.key)) kpPress(e.key);
   else if (e.key === 'Backspace') kpPress('del');
   else if (e.key === 'Enter') { e.preventDefault(); save(); }
   else if (e.key === 'Escape') closeSheet('ov');
@@ -899,10 +910,11 @@ function openForm(id, acc) {
 }
 
 async function save() {
-  const t = {id: editing?.id, type: ftype, amount: Number(famt), date: fdate, account: facc,
+  const t = {id: editing?.id, type: ftype, amount: calcAmt(famt), date: fdate, account: facc,
              to_account: fto, category: fcat, subcategory: fsub, note: fnote};
   if (ftype !== 'transfer' && !fcat) { toast('Pilih kategorinya dulu'); return pickCat(); }
   if (!t.amount) return toast('Nominalnya diisi dulu ya');
+  if (t.amount < 0) return toast('Hasil hitungannya minus, cek lagi ya');
   if (!facc) return toast('Pilih akunnya dulu');
   if (ftype === 'transfer' && facc === fto) return toast('Akun asal & tujuan gak boleh sama');
   if (!editing) { setLastDate(fdate); if (!accReturn) { lastAcc = facc; store('duitku_lastAcc', facc); } }
