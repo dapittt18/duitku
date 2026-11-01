@@ -88,7 +88,13 @@ const MERCHANT_RULES = [
 ];
 const MONTHS_ = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, mei: 5, jun: 6, jul: 7, aug: 8, agu: 8, sep: 9, oct: 10, okt: 10, nov: 11, dec: 12, des: 12 };
 
-const field_ = (text, k) => { const m = text.match(new RegExp(k + '\\s*:\\s*([^\\n\\r]+)', 'i')); return m ? m[1].trim() : ''; };
+const field_ = (text, k) => { const m = text.match(new RegExp(k + '\\s*:\\s*([^\\n\\r]+)', 'i')); return m ? decodeHtml_(m[1]).trim() : ''; };
+
+// "MCDONALD&#39;S" → "MCDONALD'S"
+function decodeHtml_(s) {
+  return String(s).replace(/&#(\d+);/g, (_, n) => String.fromCharCode(n)).replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
+}
 
 // "IDR 78.995" / "IDR 1.250.000,00" / "IDR 70,600.00" → angka rupiah
 function toAmount_(s) {
@@ -142,9 +148,11 @@ function htmlText_(html) {
 // Debit → transaksi baru. Pengembalian dana → debit dengan merchant + nominal sama gak dicatat (atau dihapus kalau
 // udah terlanjur). Dihitung ulang tiap jalan, jadi aman walau debit & refund kebaca di run yang beda.
 // Refund yang debitnya gak ketemu sama sekali dicatat jadi pemasukan biar saldo tetap bener.
-function planBcaSync_(items, existing, refundsDone) {
+// Notif dobel (merchant + nominal sama, selisih ≤ 2 menit) cuma dicatat sekali. ignored = email yang barisnya dihapus manual.
+function planBcaSync_(items, existing, refundsDone, ignored) {
+  ignored = ignored || [];
   const idOf = src => String(src).split('|')[0].replace(/^gmail:/, '');
-  const merchantOf = src => { src = String(src); return src.indexOf('|') < 0 ? '' : src.slice(src.indexOf('|') + 1); };
+  const merchantOf = src => { src = String(src); return src.indexOf('|') < 0 ? '' : decodeHtml_(src.slice(src.indexOf('|') + 1)); };
   const seen = {}; existing.forEach(r => { seen[idOf(r.source)] = true; });
   const debits = items.filter(x => !x.refund), cancel = {};
   const add = [], del = [], refunds = [], log = [];
@@ -159,7 +167,21 @@ function planBcaSync_(items, existing, refundsDone) {
     add.push([Utilities.getUuid(), t.date, 'income', t.amount, BCA_ACCOUNT, '', 'Lainnya', 'Refund ' + t.note, t.created_at, '', 'gmail:' + id + '|' + t.merchant]);
     log.push(tag(t) + '  ↩︎ refund tanpa pasangan  →  pemasukan Lainnya');
   });
+  const dup = {}, kept = [];
+  debits.forEach(x => {
+    if (cancel[x.id] || ignored.indexOf(x.id) >= 0) return;
+    const prev = kept.find(k => k.t.merchant === x.t.merchant && k.t.amount === x.t.amount &&
+      Math.abs(Date.parse(x.t.created_at) - Date.parse(k.t.created_at)) <= 120000);
+    if (prev) dup[x.id] = true; else kept.push(x);
+  });
   debits.forEach(({ id, t }) => {
+    if (ignored.indexOf(id) >= 0) return;
+    if (dup[id]) {
+      const ex = existing.find(r => idOf(r.source) === id);
+      if (ex && del.indexOf(ex.row) < 0) { del.push(ex.row); log.push(tag(t) + '  ✗ notif dobel  →  dihapus dari catatan'); }
+      else if (!ex) log.push(tag(t) + '  ✗ notif dobel  →  gak dicatat');
+      return;
+    }
     if (cancel[id]) {
       const ex = existing.find(r => idOf(r.source) === id);
       if (ex && del.indexOf(ex.row) < 0) { del.push(ex.row); log.push(tag(t) + '  ✗ di-refund  →  dihapus dari catatan'); }
@@ -195,7 +217,7 @@ function syncBcaEmails(dryRun) {
     const iS = h.indexOf('source'), iA = h.indexOf('amount');
     const existing = v.slice(1).map((r, k) => ({ row: k + 2, source: r[iS], amount: r[iA] })).filter(r => r.source);
     const done = JSON.parse(props.getProperty('BCA_REFUNDS_DONE') || '[]');
-    const p = planBcaSync_(items, existing, done);
+    const p = planBcaSync_(items, existing, done, JSON.parse(props.getProperty('BCA_IGNORED') || '[]'));
     log.push.apply(log, p.log);
     if (!dryRun) {
       if (p.add.some(r => r[6] === NEED_CHECK) && !rows_(SH.cat).some(c => c.name === NEED_CHECK && c.type === 'expense'))
@@ -327,7 +349,17 @@ function deleteTransaction(id) {
   return withLock_(() => {
     const s = sheet_(SH.tx);
     const r = findRow_(s, id);
-    if (r) s.deleteRow(r);
+    if (!r) return;
+    // transaksi dari email yang dihapus manual: inget ID email-nya biar gak dicatat ulang sama trigger
+    const iS = s.getRange(1, 1, 1, s.getLastColumn()).getValues()[0].indexOf('source');
+    const src = iS >= 0 ? String(s.getRange(r, iS + 1).getValue()) : '';
+    if (/^gmail:/.test(src)) {
+      const props = PropertiesService.getScriptProperties();
+      const ig = JSON.parse(props.getProperty('BCA_IGNORED') || '[]');
+      ig.push(src.split('|')[0].replace(/^gmail:/, ''));
+      props.setProperty('BCA_IGNORED', JSON.stringify(ig.slice(-300)));
+    }
+    s.deleteRow(r);
   });
 }
 
