@@ -77,6 +77,7 @@ const MERCHANT_RULES = [
   [/^grab/i, 'Transportation', 'Ojek Online', 'Grab'],
   [/gojek|goride|gocar/i, 'Transportation', 'Ojek Online', 'Gojek'],
   [/indomaret|indomart/i, 'Belanja', 'Indomart', 'Indomaret'],
+  [/shopeepay/i, 'Transportation', 'Public Transportation', 'ShopeePay'],
   [/shopee/i, 'Belanja', 'Shopee', 'Shopee'],
   [/blibli/i, 'Belanja', 'Blibli', 'Blibli'],
   [/spotify/i, 'Tagihan', 'Spotify', 'Spotify'],
@@ -127,14 +128,17 @@ function parseBcaDebit_(text) {
   return categorize_({ date, created_at: date + 'T' + w[4], amount, merchant, account: BCA_ACCOUNT });
 }
 
-// Email "Internet Transaction Journal" (bca@bca.co.id, myBCA). Cuma QRIS Payment yang Successful;
-// jenis lain → {skip: alasan} biar kelihatan di log tapi gak dicatat.
+// Email "Internet Transaction Journal" (bca@bca.co.id, myBCA) yang Successful:
+// QRIS Payment (merchant = "Payment to") dan Transfer to BCA Virtual Account (merchant = "Company/Product Name",
+// mis. top up ShopeePay). Jenis lain (transfer ke rekening orang) → {skip: alasan}, kelihatan di log tapi gak dicatat.
 function parseBcaQris_(text) {
-  const status = field_(text, 'Status'), type = field_(text, 'Transaction Type');
+  const status = field_(text, 'Status'), type = field_(text, 'Transaction Type') || field_(text, 'Transfer Type');
   if (!status && !type) return null;
   if (!/^successful/i.test(status)) return { skip: (type || '?') + ' status ' + (status || '?') };
-  if (!/qris/i.test(type)) return { skip: type || '?' };
-  const merchant = field_(text, 'Payment to'), amount = toAmount_(field_(text, 'Total Payment'));
+  const merchant = /qris/i.test(type) ? field_(text, 'Payment to')
+    : /virtual account/i.test(type) ? field_(text, 'Company/Product Name') : '';
+  if (!merchant) return { skip: type || '?' };
+  const amount = toAmount_(field_(text, 'Total Payment'));
   const w = field_(text, 'Transaction Date').match(/(\d{1,2})\s+([A-Za-z]{3})\w*\s+(\d{4})\s+(\d{2}:\d{2}:\d{2})/);
   const mon = w && MONTHS_[w[2].toLowerCase()];
   if (!merchant || !amount || !mon) return null;
