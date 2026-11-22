@@ -71,6 +71,8 @@ const BCA_ACCOUNT = 'BCA';
 const BCA_SINCE = '2026-10-27T00:00:00';   // email sebelum ini gak dicatat
 const NEED_CHECK = 'Perlu dicek';           // kategori buat merchant yang belum dikenal
 const CC_ACCOUNT = 'CC BCA';
+// Transfer myBCA ke rekening sendiri: 4 digit terakhir rekening tujuan → dompet di Duitku
+const OWN_ACCOUNTS = { '0844': 'Tabungan' };
 const CC_LIVE = true;                       // email kartu kredit ikut dicatat ke CC BCA
 // [pola merchant, kategori, sub kategori, catatan]. Sub 'MEAL' = Pagi/Siang/Malam sesuai jam; catatan kosong = nama merchant.
 const MERCHANT_RULES = [
@@ -135,14 +137,23 @@ function parseBcaQris_(text) {
   const status = field_(text, 'Status'), type = field_(text, 'Transaction Type') || field_(text, 'Transfer Type');
   if (!status && !type) return null;
   if (!/^successful/i.test(status)) return { skip: (type || '?') + ' status ' + (status || '?') };
+  const w = field_(text, 'Transaction Date').match(/(\d{1,2})\s+([A-Za-z]{3})\w*\s+(\d{4})\s+(\d{2}:\d{2}:\d{2})/);
+  const mon = w && MONTHS_[w[2].toLowerCase()];
+  const date = mon ? w[3] + '-' + ('0' + mon).slice(-2) + '-' + ('0' + w[1]).slice(-2) : '';
+  // transfer ke rekening BCA sendiri (mis. Tabungan) → transfer antar dompet
+  if (/transfer to bca account/i.test(type)) {
+    const to = OWN_ACCOUNTS[field_(text, 'Beneficiary Account').replace(/\D/g, '').slice(-4)];
+    const amount = toAmount_(field_(text, 'Transfer Amount'));
+    if (!to) return { skip: type + ' → ' + (field_(text, 'Beneficiary Name') || '?') };
+    if (!date || !amount) return null;
+    return { date, created_at: date + 'T' + w[4], amount, merchant: 'Transfer ke ' + to, account: BCA_ACCOUNT,
+             type: 'transfer', to, category: '', subcategory: '', note: '' };
+  }
   const merchant = /qris/i.test(type) ? field_(text, 'Payment to')
     : /virtual account/i.test(type) ? field_(text, 'Company/Product Name') : '';
   if (!merchant) return { skip: type || '?' };
   const amount = toAmount_(field_(text, 'Total Payment'));
-  const w = field_(text, 'Transaction Date').match(/(\d{1,2})\s+([A-Za-z]{3})\w*\s+(\d{4})\s+(\d{2}:\d{2}:\d{2})/);
-  const mon = w && MONTHS_[w[2].toLowerCase()];
-  if (!merchant || !amount || !mon) return null;
-  const date = w[3] + '-' + ('0' + mon).slice(-2) + '-' + ('0' + w[1]).slice(-2);
+  if (!amount || !date) return null;
   return categorize_({ date, created_at: date + 'T' + w[4], amount, merchant, account: BCA_ACCOUNT });
 }
 
@@ -206,8 +217,8 @@ function planBcaSync_(items, existing, refundsDone, ignored) {
       return;
     }
     if (seen[id] || t.created_at < BCA_SINCE) return;
-    add.push([Utilities.getUuid(), t.date, 'expense', t.amount, t.account || BCA_ACCOUNT, '', t.category, t.note, t.created_at, t.subcategory, 'gmail:' + id + '|' + t.merchant]);
-    log.push(tag(t) + '  →  ' + t.category + (t.subcategory ? ' › ' + t.subcategory : ''));
+    add.push([Utilities.getUuid(), t.date, t.type || 'expense', t.amount, t.account || BCA_ACCOUNT, t.to || '', t.category, t.note, t.created_at, t.subcategory, 'gmail:' + id + '|' + t.merchant]);
+    log.push(tag(t) + '  →  ' + (t.type === 'transfer' ? 'Transfer ' + t.account + ' → ' + t.to : t.category + (t.subcategory ? ' › ' + t.subcategory : '')));
   });
   return { add, del, refunds, log };
 }
