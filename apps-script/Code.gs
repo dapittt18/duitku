@@ -70,6 +70,8 @@ function doPost(e) {
 const BCA_ACCOUNT = 'BCA';
 const BCA_SINCE = '2026-10-27T00:00:00';   // email sebelum ini gak dicatat
 const NEED_CHECK = 'Perlu dicek';           // kategori buat merchant yang belum dikenal
+const CC_ACCOUNT = 'CC BCA';
+const CC_LIVE = true;                       // email kartu kredit ikut dicatat ke CC BCA
 // [pola merchant, kategori, sub kategori, catatan]. Sub 'MEAL' = Pagi/Siang/Malam sesuai jam; catatan kosong = nama merchant.
 const MERCHANT_RULES = [
   [/^grab/i, 'Transportation', 'Ojek Online', 'Grab'],
@@ -81,6 +83,7 @@ const MERCHANT_RULES = [
   [/netflix/i, 'Tagihan', 'Netflix', 'Netflix'],
   [/vidio/i, 'Tagihan', 'Vidio', 'Vidio'],
   [/ohaio/i, 'Jajan', 'Kopi', 'OHAIO'],
+  [/tiket\.?com|traveloka/i, 'Travel', '', ''],
   [/\btuku\b/i, 'Jajan', 'Kopi', 'Tuku'],
   [/tianlala/i, 'Food', 'Malam', 'Tianlala'],
   [/kopi|coffee|caf[eé]|starbucks|janji jiwa|tomoro|\bfore\b/i, 'Jajan', 'Kopi', ''],
@@ -121,7 +124,7 @@ function parseBcaDebit_(text) {
   const amount = toAmount_(field_(text, 'Nilai Transaksi'));
   if (!merchant || !w || !amount) return null;
   const date = w[3] + '-' + w[2] + '-' + w[1];
-  return categorize_({ date, created_at: date + 'T' + w[4], amount, merchant });
+  return categorize_({ date, created_at: date + 'T' + w[4], amount, merchant, account: BCA_ACCOUNT });
 }
 
 // Email "Internet Transaction Journal" (bca@bca.co.id, myBCA). Cuma QRIS Payment yang Successful;
@@ -136,7 +139,17 @@ function parseBcaQris_(text) {
   const mon = w && MONTHS_[w[2].toLowerCase()];
   if (!merchant || !amount || !mon) return null;
   const date = w[3] + '-' + ('0' + mon).slice(-2) + '-' + ('0' + w[1]).slice(-2);
-  return categorize_({ date, created_at: date + 'T' + w[4], amount, merchant });
+  return categorize_({ date, created_at: date + 'T' + w[4], amount, merchant, account: BCA_ACCOUNT });
+}
+
+// Email "Credit Card Transaction Notification" (kartukreditbca@bca.co.id) → pengeluaran dari CC BCA
+function parseBcaCC_(text) {
+  const merchant = field_(text, 'Merchant / ATM'), kind = field_(text, 'Jenis Transaksi');
+  const w = field_(text, 'Pada Tanggal').match(/(\d{2})-(\d{2})-(\d{4})\s+(\d{2}:\d{2}:\d{2})/);
+  const amount = toAmount_(field_(text, 'Sejumlah'));
+  if (!merchant || !w || !amount) return null;
+  const date = w[3] + '-' + w[2] + '-' + w[1];
+  return categorize_({ date, created_at: date + 'T' + w[4], amount, merchant, account: CC_ACCOUNT, kind });
 }
 
 function htmlText_(html) {
@@ -156,7 +169,7 @@ function planBcaSync_(items, existing, refundsDone, ignored) {
   const seen = {}; existing.forEach(r => { seen[idOf(r.source)] = true; });
   const debits = items.filter(x => !x.refund), cancel = {};
   const add = [], del = [], refunds = [], log = [];
-  const tag = t => t.created_at + '  Rp' + t.amount + '  ' + t.merchant;
+  const tag = t => t.created_at + '  Rp' + t.amount + '  ' + (t.account === CC_ACCOUNT ? '[CC] ' : '') + t.merchant + (t.kind ? ' (' + t.kind + ')' : '');
   items.filter(x => x.refund).forEach(({ id, t }) => {
     const d = debits.filter(x => !cancel[x.id] && x.t.merchant === t.merchant && x.t.amount === t.amount && x.t.created_at <= t.created_at).pop();
     if (d) { cancel[d.id] = true; return; }
@@ -164,7 +177,7 @@ function planBcaSync_(items, existing, refundsDone, ignored) {
     const ex = existing.find(r => merchantOf(r.source) === t.merchant && Number(r.amount) === t.amount && del.indexOf(r.row) < 0);
     if (ex) { del.push(ex.row); refunds.push(id); log.push(tag(t) + '  ↩︎ refund  →  debitnya dihapus'); return; }
     if (t.created_at < BCA_SINCE) return;
-    add.push([Utilities.getUuid(), t.date, 'income', t.amount, BCA_ACCOUNT, '', 'Lainnya', 'Refund ' + t.note, t.created_at, '', 'gmail:' + id + '|' + t.merchant]);
+    add.push([Utilities.getUuid(), t.date, 'income', t.amount, t.account || BCA_ACCOUNT, '', 'Lainnya', 'Refund ' + t.note, t.created_at, '', 'gmail:' + id + '|' + t.merchant]);
     log.push(tag(t) + '  ↩︎ refund tanpa pasangan  →  pemasukan Lainnya');
   });
   const dup = {}, kept = [];
@@ -189,7 +202,7 @@ function planBcaSync_(items, existing, refundsDone, ignored) {
       return;
     }
     if (seen[id] || t.created_at < BCA_SINCE) return;
-    add.push([Utilities.getUuid(), t.date, 'expense', t.amount, BCA_ACCOUNT, '', t.category, t.note, t.created_at, t.subcategory, 'gmail:' + id + '|' + t.merchant]);
+    add.push([Utilities.getUuid(), t.date, 'expense', t.amount, t.account || BCA_ACCOUNT, '', t.category, t.note, t.created_at, t.subcategory, 'gmail:' + id + '|' + t.merchant]);
     log.push(tag(t) + '  →  ' + t.category + (t.subcategory ? ' › ' + t.subcategory : ''));
   });
   return { add, del, refunds, log };
@@ -198,8 +211,9 @@ function planBcaSync_(items, existing, refundsDone, ignored) {
 function syncBcaEmails(dryRun) {
   dryRun = dryRun === true; // dari trigger, argumennya event object
   // 7 hari terakhir: cukup buat nangkep refund yang telat, dan debit pasangannya ikut kebaca
-  const items = [], log = [], skipped = {};
+  const items = [], log = [], skipped = {}, found = {};
   const read = (q, parse, isRefund) => GmailApp.search(q + ' newer_than:7d', 0, 50).forEach(th => th.getMessages().forEach(m => {
+    found[q] = (found[q] || 0) + 1;
     const t = parse(m.getPlainBody()) || parse(htmlText_(m.getBody()));
     if (!t) return log.push('⚠️ gak kebaca: ' + m.getSubject() + ' (' + m.getDate() + ')');
     if (t.skip) return skipped[t.skip] = (skipped[t.skip] || 0) + 1;
@@ -207,6 +221,7 @@ function syncBcaEmails(dryRun) {
   }));
   read('from:PasporBCA@klikbca.com (subject:BERHASIL OR subject:"Pengembalian Dana")', parseBcaDebit_, m => /Pengembalian Dana/i.test(m.getSubject()));
   read('from:bca@bca.co.id subject:"Internet Transaction Journal"', parseBcaQris_, () => false);
+  if (CC_LIVE || dryRun) read('from:kartukreditbca@bca.co.id subject:"Credit Card Transaction Notification"', parseBcaCC_, () => false);
   items.sort((a, b) => a.t.created_at.localeCompare(b.t.created_at));
 
   const props = PropertiesService.getScriptProperties();
@@ -238,7 +253,7 @@ function syncBcaEmails(dryRun) {
     .concat(Object.keys(skipped).map(k => '  dilewati: ' + k + ' (' + skipped[k] + 'x)'));
   Logger.log((dryRun ? '[TES, gak ada yang dicatat]\n' : '') + (log.join('\n') || 'Gak ada perubahan.') +
     (dryRun && summary.length ? '\n\nEmail BCA per hari (sebelum dicoret refund):\n' + summary.join('\n') : ''));
-  return log;
+  return dryRun ? log.concat(['', 'Email per hari:'], summary, Object.keys(found).map(q => '  ' + found[q] + ' email: ' + q)) : log;
 }
 
 function testBcaEmails() { return syncBcaEmails(true); }
