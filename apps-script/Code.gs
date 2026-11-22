@@ -48,7 +48,7 @@ function doGet() {
 
 // ---------- JSON API (dipanggil dari PWA di GitHub Pages) ----------
 // Body: {token, fn, args}. Dikirim sbg text/plain biar browser gak kirim CORS preflight.
-const API_FNS_ = ['getData', 'saveTransaction', 'deleteTransaction', 'addAccount', 'addCategory'];
+const API_FNS_ = ['getData', 'saveTransaction', 'deleteTransaction', 'addAccount', 'addCategory', 'syncBcaEmails'];
 
 function doPost(e) {
   let res;
@@ -57,7 +57,7 @@ function doPost(e) {
     const token = PropertiesService.getScriptProperties().getProperty('API_TOKEN');
     if (!token || req.token !== token) throw new Error('unauthorized');
     if (API_FNS_.indexOf(req.fn) < 0) throw new Error('unknown fn: ' + req.fn);
-    const fns = { getData, saveTransaction, deleteTransaction, addAccount, addCategory };
+    const fns = { getData, saveTransaction, deleteTransaction, addAccount, addCategory, syncBcaEmails };
     res = { ok: true, data: fns[req.fn].apply(null, Array.isArray(req.args) ? req.args : []) };
   } catch (err) {
     res = { ok: false, error: String(err && err.message || err) };
