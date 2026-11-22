@@ -73,6 +73,8 @@ const NEED_CHECK = 'Perlu dicek';           // kategori buat merchant yang belum
 const CC_ACCOUNT = 'CC BCA';
 // Transfer myBCA ke rekening sendiri: 4 digit terakhir rekening tujuan → dompet di Duitku
 const OWN_ACCOUNTS = { '0844': 'Tabungan' };
+const SINARMAS_ACCOUNT = 'Sinarmas';
+const SINARMAS_LIVE = false;                // email transfer masuk Sinarmas: false = cuma muncul di tes
 const CC_LIVE = true;                       // email kartu kredit ikut dicatat ke CC BCA
 // [pola merchant, kategori, sub kategori, catatan]. Sub 'MEAL' = Pagi/Siang/Malam sesuai jam; catatan kosong = nama merchant.
 const MERCHANT_RULES = [
@@ -167,6 +169,20 @@ function parseBcaCC_(text) {
   return categorize_({ date, created_at: date + 'T' + w[4], amount, merchant, account: CC_ACCOUNT, kind });
 }
 
+// Email notifikasi Bank Sinarmas (noreply.care@banksinarmas.com) transfer masuk.
+// Gaji dari XLSMART → pemasukan Sinarmas · Gajian. Transfer masuk lain → dilewati (kelihatan di tes).
+function parseSinarmas_(text) {
+  const kind = field_(text, 'Jenis Transaksi'), sender = field_(text, 'Pengirim');
+  const w = field_(text, 'Tanggal').match(/(\d{2})-(\d{2})-(\d{4})/), amount = toAmount_(field_(text, 'Nilai Transaksi'));
+  if (!kind && !w) return null;
+  if (!/incoming|masuk/i.test(kind)) return { skip: 'Sinarmas ' + (kind || '?') };
+  if (!/xlsmart/i.test(sender)) return { skip: 'Sinarmas masuk dari ' + (sender || '?') };
+  if (!w || !amount) return null;
+  const date = w[3] + '-' + w[2] + '-' + w[1];
+  return { date, created_at: date + 'T00:00:00', amount, merchant: sender, account: SINARMAS_ACCOUNT, type: 'income',
+           category: 'Gajian', subcategory: '', note: 'Gaji XLSMART', kind };
+}
+
 function htmlText_(html) {
   return html.replace(/<br\s*\/?>|<\/(p|div|tr|td|th|li)>/gi, '\n').replace(/<[^>]+>/g, ' ')
     .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/[ \t]+/g, ' ');
@@ -177,8 +193,8 @@ function htmlText_(html) {
 // udah terlanjur). Dihitung ulang tiap jalan, jadi aman walau debit & refund kebaca di run yang beda.
 // Refund yang debitnya gak ketemu sama sekali dicatat jadi pemasukan biar saldo tetap bener.
 // Notif dobel (merchant + nominal sama, selisih ≤ 2 menit) cuma dicatat sekali. ignored = email yang barisnya dihapus manual.
-function planBcaSync_(items, existing, refundsDone, ignored) {
-  ignored = ignored || [];
+function planBcaSync_(items, existing, refundsDone, ignored, manual) {
+  ignored = ignored || []; manual = manual || [];
   const idOf = src => String(src).split('|')[0].replace(/^gmail:/, '');
   const merchantOf = src => { src = String(src); return src.indexOf('|') < 0 ? '' : decodeHtml_(src.slice(src.indexOf('|') + 1)); };
   const seen = {}; existing.forEach(r => { seen[idOf(r.source)] = true; });
@@ -217,8 +233,12 @@ function planBcaSync_(items, existing, refundsDone, ignored) {
       return;
     }
     if (seen[id] || t.created_at < BCA_SINCE) return;
+    // udah dicatat manual (akun, tanggal, jenis, nominal sama) → jangan dobel
+    if (manual.some(r => r.account === (t.account || BCA_ACCOUNT) && r.date === t.date && r.type === (t.type || 'expense') && Number(r.amount) === t.amount))
+      return log.push(tag(t) + '  =  udah ada catatan manual, gak dicatat');
     add.push([Utilities.getUuid(), t.date, t.type || 'expense', t.amount, t.account || BCA_ACCOUNT, t.to || '', t.category, t.note, t.created_at, t.subcategory, 'gmail:' + id + '|' + t.merchant]);
-    log.push(tag(t) + '  →  ' + (t.type === 'transfer' ? 'Transfer ' + t.account + ' → ' + t.to : t.category + (t.subcategory ? ' › ' + t.subcategory : '')));
+    log.push(tag(t) + '  →  ' + (t.type === 'transfer' ? 'Transfer ' + t.account + ' → ' + t.to
+      : (t.type === 'income' ? '+ pemasukan ' + t.account + ' · ' : '') + t.category + (t.subcategory ? ' › ' + t.subcategory : '')));
   });
   return { add, del, refunds, log };
 }
@@ -244,6 +264,7 @@ function syncBcaEmails(dryRun) {
   read('from:PasporBCA@klikbca.com (subject:BERHASIL OR subject:"Pengembalian Dana")', parseBcaDebit_, m => /Pengembalian Dana/i.test(m.getSubject()));
   read('from:bca@bca.co.id subject:"Internet Transaction Journal"', parseBcaQris_, () => false);
   if (CC_LIVE || dryRun) read('from:kartukreditbca@bca.co.id subject:"Credit Card Transaction Notification"', parseBcaCC_, () => false);
+  if (SINARMAS_LIVE || dryRun) read('from:noreply.care@banksinarmas.com', parseSinarmas_, () => false);
   items.sort((a, b) => a.t.created_at.localeCompare(b.t.created_at));
 
   const props = PropertiesService.getScriptProperties();
@@ -251,10 +272,13 @@ function syncBcaEmails(dryRun) {
   lock.waitLock(10000);
   try {
     const s = sheet_(SH.tx), v = s.getDataRange().getValues(), h = v[0];
-    const iS = h.indexOf('source'), iA = h.indexOf('amount');
+    const iS = h.indexOf('source'), iA = h.indexOf('amount'), iD = h.indexOf('date'), iT = h.indexOf('type'), iAc = h.indexOf('account');
     const existing = v.slice(1).map((r, k) => ({ row: k + 2, source: r[iS], amount: r[iA] })).filter(r => r.source);
+    const tz = Session.getScriptTimeZone();
+    const manual = v.slice(1).filter(r => r[0] !== '' && !r[iS]).map(r => ({
+      date: r[iD] instanceof Date ? Utilities.formatDate(r[iD], tz, 'yyyy-MM-dd') : String(r[iD]), type: r[iT], amount: r[iA], account: r[iAc] }));
     const done = JSON.parse(props.getProperty('BCA_REFUNDS_DONE') || '[]');
-    const p = planBcaSync_(items, existing, done, JSON.parse(props.getProperty('BCA_IGNORED') || '[]'));
+    const p = planBcaSync_(items, existing, done, JSON.parse(props.getProperty('BCA_IGNORED') || '[]'), manual);
     log.push.apply(log, p.log);
     if (!dryRun) {
       if (p.add.some(r => r[6] === NEED_CHECK) && !rows_(SH.cat).some(c => c.name === NEED_CHECK && c.type === 'expense'))
