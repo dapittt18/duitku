@@ -211,12 +211,19 @@ function planBcaSync_(items, existing, refundsDone, ignored) {
 function syncBcaEmails(dryRun) {
   dryRun = dryRun === true; // dari trigger, argumennya event object
   // 7 hari terakhir: cukup buat nangkep refund yang telat, dan debit pasangannya ikut kebaca
-  const items = [], log = [], skipped = {}, found = {};
+  const items = [], log = [], skipped = {}, found = {}, samples = [];
   const read = (q, parse, isRefund) => GmailApp.search(q + ' newer_than:7d', 0, 50).forEach(th => th.getMessages().forEach(m => {
     found[q] = (found[q] || 0) + 1;
     const t = parse(m.getPlainBody()) || parse(htmlText_(m.getBody()));
     if (!t) return log.push('⚠️ gak kebaca: ' + m.getSubject() + ' (' + m.getDate() + ')');
-    if (t.skip) return skipped[t.skip] = (skipped[t.skip] || 0) + 1;
+    if (t.skip) {
+      skipped[t.skip] = (skipped[t.skip] || 0) + 1;
+      // buat tes: contoh isi email yang dilewati (45 baris pertama, nomor panjang disensor)
+      if (dryRun && samples.length < 3) samples.push(m.getDate() + ' | ' + m.getSubject() + '\n' + htmlText_(m.getBody()).split('\n')
+        .map(l => decodeHtml_(l).trim()).filter(l => l && !/^(©|copyright)/i.test(l)).slice(0, 45)
+        .map(l => '    ' + l.replace(/\d{6,}/g, d => '••••' + d.slice(-4))).join('\n'));
+      return;
+    }
     items.push({ id: m.getId(), refund: isRefund(m), t });
   }));
   read('from:PasporBCA@klikbca.com (subject:BERHASIL OR subject:"Pengembalian Dana")', parseBcaDebit_, m => /Pengembalian Dana/i.test(m.getSubject()));
@@ -253,7 +260,7 @@ function syncBcaEmails(dryRun) {
     .concat(Object.keys(skipped).map(k => '  dilewati: ' + k + ' (' + skipped[k] + 'x)'));
   Logger.log((dryRun ? '[TES, gak ada yang dicatat]\n' : '') + (log.join('\n') || 'Gak ada perubahan.') +
     (dryRun && summary.length ? '\n\nEmail BCA per hari (sebelum dicoret refund):\n' + summary.join('\n') : ''));
-  return dryRun ? log.concat(['', 'Email per hari:'], summary, Object.keys(found).map(q => '  ' + found[q] + ' email: ' + q)) : log;
+  return dryRun ? log.concat(['', 'Email per hari:'], summary, Object.keys(found).map(q => '  ' + found[q] + ' email: ' + q), samples.length ? ['', 'Contoh email yang dilewati:'] : [], samples) : log;
 }
 
 function testBcaEmails() { return syncBcaEmails(true); }
