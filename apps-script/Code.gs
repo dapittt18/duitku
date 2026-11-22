@@ -252,16 +252,26 @@ function installBcaTrigger() {
 }
 
 // ---------- helpers ----------
-// Pake Sheet tempat script nempel; kalau script-nya standalone, bikin/buka "Duitku Data" otomatis
+// Pake Sheet tempat script nempel; kalau script-nya standalone, buka Sheet dari Script Property SHEET_ID.
+// Sheet baru cuma dibikin kalau SHEET_ID belum pernah ada. Kalau SHEET_ID ada tapi gagal dibuka (gangguan
+// sementara di Google), coba lagi lalu ERROR — jangan pernah diem-diem bikin sheet kosong baru.
+let ss_cache_ = null;
 function ss_() {
+  if (ss_cache_) return ss_cache_;
   const active = SpreadsheetApp.getActive();
-  if (active) return active;
+  if (active) return (ss_cache_ = active);
   const props = PropertiesService.getScriptProperties();
   const id = props.getProperty('SHEET_ID');
-  if (id) { try { return SpreadsheetApp.openById(id); } catch (e) {} }
+  if (id) {
+    let err;
+    for (let i = 0; i < 3; i++) {
+      try { return (ss_cache_ = SpreadsheetApp.openById(id)); } catch (e) { err = e; Utilities.sleep(1500 * (i + 1)); }
+    }
+    throw new Error('Gagal buka Sheet ' + id + ': ' + (err && err.message));
+  }
   const ss = SpreadsheetApp.create('Duitku Data');
   props.setProperty('SHEET_ID', ss.getId());
-  return ss;
+  return (ss_cache_ = ss);
 }
 
 // Upgrade sheet lama: tambah kolom yang belum ada (subcategory, parent) + sub kategori default
