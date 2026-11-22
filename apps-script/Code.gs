@@ -255,13 +255,16 @@ function installBcaTrigger() {
 // Pake Sheet tempat script nempel; kalau script-nya standalone, buka Sheet dari Script Property SHEET_ID.
 // Sheet baru cuma dibikin kalau SHEET_ID belum pernah ada. Kalau SHEET_ID ada tapi gagal dibuka (gangguan
 // sementara di Google), coba lagi lalu ERROR — jangan pernah diem-diem bikin sheet kosong baru.
+// Sheet data Duitku yang asli. Dikunci di sini biar gak bisa ketuker lagi lewat Script Properties.
+// (ID-nya aja gak ngasih akses: Sheet-nya private.)
+const DATA_SHEET_ID = '1d-5pFhe1rg9CmoyKMJ1n7IJNi1_S3bBUSvoM7mhdumo';
 let ss_cache_ = null;
 function ss_() {
   if (ss_cache_) return ss_cache_;
   const active = SpreadsheetApp.getActive();
   if (active) return (ss_cache_ = active);
   const props = PropertiesService.getScriptProperties();
-  const id = props.getProperty('SHEET_ID');
+  const id = DATA_SHEET_ID || props.getProperty('SHEET_ID');
   if (id) {
     let err;
     for (let i = 0; i < 3; i++) {
