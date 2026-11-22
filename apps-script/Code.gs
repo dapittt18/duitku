@@ -74,7 +74,7 @@ const CC_ACCOUNT = 'CC BCA';
 // Transfer myBCA ke rekening sendiri: 4 digit terakhir rekening tujuan → dompet di Duitku
 const OWN_ACCOUNTS = { '0844': 'Tabungan' };
 const SINARMAS_ACCOUNT = 'Sinarmas';
-const SINARMAS_LIVE = false;                // email transfer masuk Sinarmas: false = cuma muncul di tes
+const SINARMAS_LIVE = true;                 // email transfer masuk Sinarmas (gaji XLSMART) ikut dicatat
 const CC_LIVE = true;                       // email kartu kredit ikut dicatat ke CC BCA
 // [pola merchant, kategori, sub kategori, catatan]. Sub 'MEAL' = Pagi/Siang/Malam sesuai jam; catatan kosong = nama merchant.
 const MERCHANT_RULES = [
